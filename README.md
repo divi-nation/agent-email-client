@@ -29,27 +29,35 @@ Copy these two files into the same folder as your main agent script:
 address, where to save mail, the agent's name, and timezone. The file tells you
 exactly what each one is.
 
-**3. Set two secrets** (see "Secrets" below): `GMAIL_APP_PASSWORD` (required)
-and `OPERATOR_EMAIL` (optional).
+**3. Set two secrets** — `GMAIL_APP_PASSWORD` (required) and `OPERATOR_EMAIL`
+(optional). The top of `agent_email_config.py` explains exactly what each one
+needs to be and where to set it.
 
 **4. Add these two lines to your main agent script:**
 
 ```python
-from agent_email_config import build_inbox
+from agent_email_config import build_inbox, AGENT_TOOL_INSTRUCTIONS
 inbox = build_inbox()
 ```
 
-That's it — `inbox` is ready. Now use it:
+**5. Tell your agent about its email tools.** Find the place in your script
+where the prompt text is built (the text that gets sent to the model) and add
+the ready-made instructions to it. It will look like one of these:
 
 ```python
-inbox.fetch_unread_and_store()                        # check for new mail
-inbox.send_email("person@example.com", "Hi", "body")  # send a message
-inbox.search_emails("invoice")                        # search the archive
+prompt += AGENT_TOOL_INSTRUCTIONS
+# or
+prompt = prompt + AGENT_TOOL_INSTRUCTIONS
+# or, inside an f-string:
+prompt = f"... {AGENT_TOOL_INSTRUCTIONS}"
 ```
+
+> `AGENT_TOOL_INSTRUCTIONS` is a block of text that ships with the library and
+> describes the email methods to your agent. Appending it to the prompt is what
+> makes the agent "know" it can check, search, and send email.
 
 **Try it first:** run `python agent_email_config.py` — it fetches new mail and
 retries the outbox, so you can see it working before wiring it in.
-
 
 ## What it outputs
 
@@ -69,10 +77,6 @@ Under your `EMAIL_ARCHIVE_REPO_PATH`, it creates:
 
 Each email is a Markdown file with a small header (from, to, subject, date)
 followed by the body, so a human can read it too.
-
-> **Privacy:** point `EMAIL_ARCHIVE_REPO_PATH` at a **private** location — a
-> private repo or a folder in one. If it's in a public repo, every email body
-> becomes publicly readable.
 
 ## What each file is for
 
