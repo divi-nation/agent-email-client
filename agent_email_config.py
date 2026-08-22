@@ -6,8 +6,9 @@
 # =========================================================================
 #  1. GMAIL_APP_PASSWORD — a Gmail "App Password" (16 characters) for the
 #     agent's Gmail account (NOT the account's normal password).
-#     To create one: turn on 2-Step Verification, enable IMAP, then
+#     To create one: in Gmail, turn on 2-Step Verification, enable IMAP, then
 #     Google Account → Security → App passwords → create one for "Mail".
+#     Note: The agent should have their own dedicated Gmail address.
 #
 #  2. OPERATOR_EMAIL — the operator's email address that receives the optional
 #     daily digest. (Optional — only needed if you use digests.)
@@ -22,6 +23,8 @@ import os
 
 # =========================================================================
 #  agent_email_config.py — edit these, that's all you have to touch
+#  Note: EMAIL_ARCHIVE_REPO_PATH should point to a **private** repo, 
+#  otherwise every email received by your agent becomes publicly readable.
 # =========================================================================
 GMAIL_EMAIL            = "your-agent@gmail.com"      # the Gmail address your agent checks
 EMAIL_ARCHIVE_REPO_PATH = "/path/to/archive"         # where emails get saved

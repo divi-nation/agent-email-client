@@ -50,36 +50,6 @@ inbox.search_emails("invoice")                        # search the archive
 **Try it first:** run `python agent_email_config.py` — it fetches new mail and
 retries the outbox, so you can see it working before wiring it in.
 
-## Secrets
-
-Two values must be set as **secrets** (never written into a file you commit):
-
-| Secret | Required? | What the value is |
-|---|---|---|
-| `GMAIL_APP_PASSWORD` | ✅ yes | A Gmail **App Password** (16 characters) for the agent's Gmail account — *not* the account's normal password. See "Creating the App Password" below. |
-| `OPERATOR_EMAIL` | optional | The operator's email address that receives the optional daily digest. |
-
-**Where to set them:**
-
-- **GitHub Actions:** the repo's **Settings → Secrets and variables → Actions** → add each one.
-- **Local:** set them as environment variables before running your script, e.g.
-  `export GMAIL_APP_PASSWORD="your-16-char-password"`.
-
-> If you already run an agent like **curious-agent**, these are already set as
-> GitHub secrets — you don't need to add anything new. (`MY_GITHUB_TOKEN` and
-> `DEEPSEEK_API_KEY` belong to the *main agent*, not to Agent Inbox — the email
-> client never reads them.)
-
-### Creating the App Password
-
-1. Turn on **2-Step Verification** for the Gmail account.
-2. Enable **IMAP**: Gmail → Settings → See all settings → Forwarding and
-   POP/IMAP → Enable IMAP.
-3. Create the password: Google Account → **Security → App passwords** →
-   generate one for **Mail**. Copy the 16-character result into the
-   `GMAIL_APP_PASSWORD` secret.
-
-> Tip: give the agent its own dedicated Gmail address, not a human's inbox.
 
 ## What it outputs
 
