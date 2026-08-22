@@ -21,6 +21,10 @@
 
 import os
 
+# Imported here so you can also do:
+#   from agent_email_config import AGENT_TOOL_INSTRUCTIONS
+from agent_inbox import AgentInbox, AGENT_TOOL_INSTRUCTIONS
+
 # =========================================================================
 #  agent_email_config.py — edit these, that's all you have to touch
 #  Note: EMAIL_ARCHIVE_REPO_PATH should point to a **private** repo, 
@@ -48,7 +52,6 @@ def build_inbox():
             "GMAIL_APP_PASSWORD is not set. Set it as a SECRET "
             "(environment variable) — see the instructions at the top of this file."
         )
-    from agent_inbox import AgentInbox
     return AgentInbox(
         email_address=GMAIL_EMAIL,
         app_password=GMAIL_APP_PASSWORD,
