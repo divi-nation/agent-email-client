@@ -63,14 +63,19 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 # append it to the agent's prompt so the agent "knows" it can use these methods.
 # It is a plain string — importing it has no side effects (nothing prints).
 AGENT_TOOL_INSTRUCTIONS = """You have an email inbox (via the `inbox` object). Available methods:
-- inbox.fetch_unread_and_store()      # pull new mail from Gmail
-- inbox.search_emails("query")        # search all mail (headers + body)
-- inbox.get_thread("<message-id>")    # whole conversation, oldest first
+- inbox.fetch_unread_and_store() # pull new mail from Gmail
+- inbox.search_emails("query") # search all mail (headers + body)
+- inbox.get_thread("<message-id>") # whole conversation, oldest first
 - inbox.send_email(to, subject, body) # send; returns (ok, error)
 - inbox.save_draft(to, subject, body) # save a draft
-- inbox.list_emails(status="unread")  # list messages (summaries)
-- inbox.mark_email_read("msg_001")    # mark read
-- inbox.retry_outbox()                # retry failed sends
+- inbox.list_emails(status="unread") # list messages (summaries)
+- inbox.mark_email_read("msg_001") # mark an email read
+- inbox.add_label("msg_001", "label") # tag an email
+- inbox.remove_label("msg_001", "label") # remove a tag
+- inbox.list_drafts() # list drafts
+- inbox.list_outbox() # list messages awaiting retry
+- inbox.list_by_label("label") # list emails with a label
+- inbox.retry_outbox() # retry failed sends
 """
 
 
