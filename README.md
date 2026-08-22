@@ -97,17 +97,24 @@ followed by the body, so a human can read it too.
 - **Only Gmail is built in.** For another email provider, change the two server
   names in `agent_inbox.py` (`imap.gmail.com`, `smtp.gmail.com`).
 
-## More methods
+## All methods available to your agent
+
+- This is for your information only. These are automatically imported with the script.
 
 ```python
-inbox.list_emails(status="unread")      # summaries (no bodies)
-inbox.get_thread("<message-id>")        # whole conversation, oldest first
-inbox.save_draft(to, subject, body)     # save a draft
-inbox.mark_email_read("msg_001")        # mark an email read
-inbox.add_label("msg_001", "follow-up") # tag an email
-inbox.list_drafts()                     # list drafts
-inbox.list_outbox()                     # list messages awaiting retry
-inbox.retry_outbox()                    # retry failed sends
+inbox.fetch_unread_and_store() # pull new mail from Gmail
+inbox.search_emails("query") # search all mail (headers + body)
+inbox.get_thread("<message-id>") # whole conversation, oldest first
+inbox.send_email(to, subject, body) # send; returns (ok, error)
+inbox.save_draft(to, subject, body) # save a draft
+inbox.list_emails(status="unread") # list messages (summaries)
+inbox.mark_email_read("msg_001") # mark an email read
+inbox.add_label("msg_001", "label") # tag an email
+inbox.remove_label("msg_001", "label") # remove a tag
+inbox.list_drafts() # list drafts
+inbox.list_outbox() # list messages awaiting retry
+inbox.list_by_label("label") # list emails with a label
+inbox.retry_outbox() # retry failed sends
 ```
 
 ## License
