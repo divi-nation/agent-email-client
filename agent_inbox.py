@@ -500,8 +500,45 @@ class AgentInbox:
         return self.list_emails(status="draft")
 
     def list_outbox(self):
-        """Return emails queued in the outbox awaiting retry."""
-        return self.list_emails(status="outbox")
+        """Return emails queued in the outbox awaiting retry.
+
+        Outbox entries are files in record/emails/outbox/ (not index.json records —
+        _save_to_outbox writes the file directly), so read the folder here.
+        """
+        outbox_path = self.private_repo_path / "record" / "emails" / "outbox"
+        if not outbox_path.exists():
+            return []
+        out = []
+        for file_path in sorted(outbox_path.glob("*.md")):
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                parts = content.split("---\n", 2)
+                if len(parts) < 3:
+                    continue
+                frontmatter = {}
+                for line in parts[1].strip().split("\n"):
+                    if ": " in line:
+                        key, value = line.split(": ", 1)
+                        frontmatter[key.strip()] = value.strip().strip('"')
+                out.append({
+                    "id": frontmatter.get("id"),
+                    "status": "outbox",
+                    "direction": "outgoing",
+                    "to": frontmatter.get("to", ""),
+                    "subject": frontmatter.get("subject", ""),
+                    "date": frontmatter.get("date_created", ""),
+                    "retry_count": int(frontmatter.get("retry_count", 0)),
+                    "last_error": frontmatter.get("last_error", ""),
+                    "labels": [],
+                })
+            except Exception:
+                continue
+        return out
+
+    def count_outbox(self):
+        """Number of emails currently queued in the outbox (folder file count)."""
+        outbox_path = self.private_repo_path / "record" / "emails" / "outbox"
+        return len(list(outbox_path.glob("*.md"))) if outbox_path.exists() else 0
 
     def list_by_label(self, label):
         """Return all emails carrying a given label."""
