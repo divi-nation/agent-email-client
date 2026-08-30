@@ -90,6 +90,12 @@ followed by the body, so a human can read it too.
 
 - **Fetching consumes.** Fetched mail is marked read in Gmail, so each message
   is pulled once. (Nothing is deleted — it just isn't re-fetched.)
+- **If you save mail somewhere that might not survive**, such as a copy of a Git
+  repository you have not committed yet, use `fetch_unread_and_store(mark_seen=False)`
+  and call `inbox.mark_pending_seen()` once the mail is safely stored. Mail that
+  is marked read but then lost cannot be fetched again, because only unread mail
+  is collected. Leaving it unread means the worst case is receiving the same
+  email twice, instead of losing it.
 - **Retries aren't automatic.** A failed send lands in `outbox/`; call
   `inbox.retry_outbox()` to try again. After 3 failures it moves to `failed/`.
 - **Sending to a made-up address** (like `x@example.com`) is rejected with a
@@ -115,6 +121,13 @@ inbox.list_drafts() # list drafts
 inbox.list_outbox() # list messages awaiting retry
 inbox.list_by_label("label") # list emails with a label
 inbox.retry_outbox() # retry failed sends
+```
+
+Two more, for the program running the agent rather than the agent itself:
+
+```python
+inbox.mark_pending_seen() # mark mail read once you have safely saved it
+inbox.send_operator_alert(subject, body) # notify the operator; NOT saved in the email record
 ```
 
 ## License

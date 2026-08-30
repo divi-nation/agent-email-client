@@ -106,6 +106,17 @@ def validate_email_address(value):
     return True, ""
 
 
+def _decode_part(part):
+    """Return an email part's text. Empty string if there is nothing to read."""
+    try:
+        payload = part.get_payload(decode=True)
+    except Exception:
+        return ""
+    if payload is None:
+        return ""
+    return payload.decode("utf-8", errors="ignore")
+
+
 def _html_to_text(html):
     """Minimal stdlib HTML→text: strip tags, unescape common entities, collapse blanks."""
     if not html:
@@ -146,6 +157,9 @@ class AgentInbox:
         self.operator_email = operator_email
         self.agent_name = agent_name
         self.timezone = ZoneInfo(timezone)
+        # Mail fetched with mark_seen=False waits here to be marked read on the
+        # server once the caller has safely saved it. See mark_pending_seen().
+        self._pending_seen_uids = []
         self._ensure_directories()
 
     def _ensure_directories(self):
@@ -178,7 +192,16 @@ class AgentInbox:
 
     def _generate_email_id(self, existing_ids):
         """Generate a unique message ID for new emails."""
-        nums = [int(eid.split('_')[1]) for eid in existing_ids if eid.startswith('msg_')]
+        nums = []
+        for eid in existing_ids:
+            # An entry with a missing or unexpected id must not stop new mail
+            # from being saved, so anything unreadable is skipped.
+            if not isinstance(eid, str) or not eid.startswith("msg_"):
+                continue
+            try:
+                nums.append(int(eid.split("_")[1]))
+            except (IndexError, ValueError):
+                continue
         if nums:
             return f"msg_{max(nums) + 1:03d}"
         return "msg_001"
@@ -208,8 +231,18 @@ class AgentInbox:
         return f"{folder}/{filename}"
 
     # ---------- Fetch Incoming Emails ----------
-    def fetch_unread_and_store(self):
-        """Fetch unread emails from Gmail, save to inbox/, and update index."""
+    def fetch_unread_and_store(self, mark_seen=True):
+        """Fetch unread emails from Gmail, save to inbox/, and update index.
+
+        mark_seen=True marks each email as read on the server as it is saved.
+
+        mark_seen=False leaves the mail unread on the server and remembers it
+        instead; call mark_pending_seen() once the saved mail is safely stored.
+        Use this when the mail is being saved somewhere that might not survive,
+        such as a copy of a repository that has not been committed yet. Mail that
+        is marked read but then lost cannot be fetched again, because only unread
+        mail is collected.
+        """
         if not self.email_address or not self.app_password:
             print("⚠️ Email credentials missing. Skipping fetch.")
             return
@@ -217,6 +250,8 @@ class AgentInbox:
         print("📬 Fetching unread emails from Gmail...")
         index = self.load_index()
         existing_ids = [entry.get("id") for entry in index]
+        seen_message_ids = {entry.get("message_id") for entry in index
+                            if entry.get("message_id")}
         new_count = 0
 
         try:
@@ -224,28 +259,43 @@ class AgentInbox:
             mail.login(self.email_address, self.app_password)
             mail.select("inbox")
 
-            status, data = mail.search(None, "UNSEEN")
+            # UIDs rather than sequence numbers: a UID keeps pointing at the same
+            # message on a later connection, which is what mark_pending_seen needs.
+            status, data = mail.uid("SEARCH", None, "UNSEEN")
             if status != "OK":
                 print("⚠️ No unread emails found.")
                 mail.close()
                 mail.logout()
                 return
 
-            email_ids = data[0].split()
-            print(f"📬 Found {len(email_ids)} unread email(s).")
+            email_uids = data[0].split()
+            print(f"📬 Found {len(email_uids)} unread email(s).")
 
-            for num in email_ids:
-                status, msg_data = mail.fetch(num, "(RFC822)")
-                if status != "OK":
+            for uid in email_uids:
+                uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
+
+                def remember_seen():
+                    """Mark this email read now, or note it for later."""
+                    if mark_seen:
+                        mail.uid("STORE", uid, "+FLAGS", "\\Seen")
+                    else:
+                        self._pending_seen_uids.append(uid_str)
+
+                status, msg_data = mail.uid("FETCH", uid, "(RFC822)")
+                if status != "OK" or not msg_data or not msg_data[0]:
                     continue
 
                 raw_email = msg_data[0][1]
                 msg = email.message_from_bytes(raw_email)
 
-                # Deduplicate by Message-ID
+                # Skip anything already saved. Mail with no Message-ID cannot be
+                # compared this way, so it is always treated as new rather than
+                # being mistaken for a copy of the last one that also had none.
                 msg_id = msg.get("Message-ID", "").strip()
-                if any(entry.get("message_id") == msg_id for entry in index):
+                if msg_id and msg_id in seen_message_ids:
                     print(f"⏭️ Skipping duplicate email: {msg_id}")
+                    # Already saved, so stop it coming back on every fetch.
+                    remember_seen()
                     continue
 
                 # Parse headers
@@ -276,11 +326,11 @@ class AgentInbox:
                                 html_part = part
                                 break
                     if text_part:
-                        body = text_part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                        body = _decode_part(text_part)
                     elif html_part:
-                        body = _html_to_text(html_part.get_payload(decode=True).decode("utf-8", errors="ignore"))
+                        body = _html_to_text(_decode_part(html_part))
                 else:
-                    payload = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    payload = _decode_part(msg)
                     if msg.get_content_type() == "text/html":
                         body = _html_to_text(payload)
                     else:
@@ -298,7 +348,7 @@ class AgentInbox:
                     "labels": [],
                 }
 
-                new_id = self._generate_email_id(existing_ids + [entry.get("id") for entry in index if "id" in entry])
+                new_id = self._generate_email_id(existing_ids)
                 frontmatter["id"] = new_id
                 existing_ids.append(new_id)
 
@@ -320,22 +370,81 @@ class AgentInbox:
                     "in_reply_to": frontmatter["in_reply_to"],
                     "labels": [],
                 })
+                if msg_id:
+                    seen_message_ids.add(msg_id)
+
+                # The index is saved for every email, before that email is marked
+                # read, so mail can never be marked read without a record of it.
+                # Saving once at the end would lose every email collected so far
+                # if anything went wrong partway through.
+                self.save_index(index)
                 new_count += 1
                 print(f"✅ Saved email from {from_addr}: {subject}")
 
-                mail.store(num, "+FLAGS", "\\Seen")
+                remember_seen()
 
             mail.close()
             mail.logout()
 
             if new_count > 0:
-                self.save_index(index)
                 print(f"📬 Fetched and stored {new_count} new email(s).")
+                if not mark_seen:
+                    print(f"📬 {len(self._pending_seen_uids)} email(s) left unread on the "
+                          f"server until the record is saved.")
             else:
                 print("📬 No new emails to fetch.")
 
         except Exception as e:
             print(f"❌ Failed to fetch emails: {e}")
+
+    def mark_pending_seen(self):
+        """Mark mail fetched with mark_seen=False as read on the server.
+
+        Call this once the fetched mail has been saved somewhere permanent. If it
+        is never called, the mail stays unread and the next fetch collects it
+        again, which is the safe outcome: the same email arriving twice is a much
+        smaller problem than an email disappearing.
+        """
+        if not self._pending_seen_uids:
+            return 0
+        if not self.email_address or not self.app_password:
+            return 0
+
+        marked = 0
+        try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail.login(self.email_address, self.app_password)
+            mail.select("inbox")
+            for uid in self._pending_seen_uids:
+                status, _ = mail.uid("STORE", uid, "+FLAGS", "\\Seen")
+                if status == "OK":
+                    marked += 1
+            mail.close()
+            mail.logout()
+            self._pending_seen_uids = []
+            print(f"📬 Marked {marked} email(s) as read on the server.")
+        except Exception as e:
+            # The mail stays unread and is collected again next time.
+            print(f"⚠️ Could not mark mail as read on the server: {e}")
+        return marked
+
+    def send_operator_alert(self, subject, body):
+        """Email the operator about how the agent is running.
+
+        Used for budget notices. Like the session digest, this goes straight to
+        the operator and is NOT saved in the email record, because it is a notice
+        from the software rather than part of the agent's correspondence.
+        """
+        if not self.operator_email:
+            print("⚠️ No operator email set. Skipping alert.")
+            return False
+        body = f"{body}\n\n---\nSent by the {self.agent_name} engine (not saved in the email record).\n"
+        success, error = self._send_raw_email(self.operator_email, subject, body)
+        if success:
+            print(f"📧 Operator alert sent: {subject}")
+        else:
+            print(f"❌ Operator alert failed to send: {error}")
+        return success
 
     # ---------- Full-Text Email Search ----------
     def search_emails(self, query):
@@ -560,7 +669,9 @@ class AgentInbox:
             return
 
         print(f"📤 Retrying {len(outbox_files)} email(s) in Outbox...")
-        index = self.load_index()
+        # The index is not loaded here. _archive_sent() reads and writes it for
+        # each email that goes out, so holding a copy and saving it at the end
+        # would overwrite those entries and lose the record of what was sent.
         moved_count = 0
         failed_count = 0
 
@@ -633,7 +744,6 @@ class AgentInbox:
                 failed_count += 1
 
         if moved_count > 0 or failed_count > 0:
-            self.save_index(index)
             print(f"📤 Outbox retry complete. Sent: {moved_count}, Failed: {failed_count}")
 
     # ---------- Send Outgoing Emails ----------
