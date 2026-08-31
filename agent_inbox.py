@@ -62,6 +62,9 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 # This text teaches an AI agent what email capabilities it has. Import it and
 # append it to the agent's prompt so the agent "knows" it can use these methods.
 # It is a plain string — importing it has no side effects (nothing prints).
+# For anyone using this file as a standalone library: append this to your own
+# prompt so your agent knows it can send and search mail. Step 5 of the README.
+# An engine that describes these tools itself will not need it.
 AGENT_TOOL_INSTRUCTIONS = """You have an email inbox (via the `inbox` object). Available methods:
 - inbox.fetch_unread_and_store() # pull new mail from Gmail
 - inbox.search_emails("query") # search all mail (headers + body)
