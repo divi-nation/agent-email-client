@@ -957,12 +957,14 @@ class AgentInbox:
         return False
 
     # ---------- Session Digest ----------
-    def send_session_digest(self, session_type, session_num, 
-                            budget_spent, budget_remaining, 
-                            incoming_count=0, sent_count=0, 
+    def send_session_digest(self, session_type, session_num,
+                            budget_spent, budget_remaining,
+                            incoming_count=0, sent_count=0,
                             outbox_count=0, errors=None,
                             incoming_emails=None, sent_emails=None,
-                            files_edited=0, journal_written=False, journal_entry=""):
+                            files_edited=0, journal_written=False, journal_entry="",
+                            account_balance=None, monthly_limit=None,
+                            scripts_run=None):
         """
         Send a session digest email to the operator.
 
@@ -977,6 +979,14 @@ class AgentInbox:
         now_local = datetime.now(self.timezone)
         subject = f"[{self.agent_name}] Session {session_num} – {session_type} ({now_local.strftime('%Y-%m-%d %H:%M')})"
 
+        limit_note = f" of ${monthly_limit:.2f}" if monthly_limit else ""
+        # The account balance is what the provider holds; the monthly figures are
+        # what this agent has been allowed. They are different numbers, so they
+        # are shown on different lines.
+        balance_line = (f"- Account balance at the provider: ${account_balance:.2f}\n"
+                        if account_balance is not None else "")
+        scripts_note = ", ".join(scripts_run) if scripts_run else "none"
+
         body = f"""{self.agent_name} Session Digest
 =======================
 
@@ -987,9 +997,10 @@ Date/Time: {now_local.strftime('%Y-%m-%d %H:%M %Z')}
 - Incoming emails received: {incoming_count}
 - Emails sent successfully: {sent_count}
 - Emails in Outbox (pending retry): {outbox_count}
-- Budget spent: ${budget_spent:.2f}
-- Budget remaining: ${budget_remaining:.2f}
-- Files edited: {files_edited}
+- Spent this month: ${budget_spent:.2f}{limit_note}
+- Remaining this month: ${budget_remaining:.2f}
+{balance_line}- Files written: {files_edited}
+- Scripts run: {scripts_note}
 - Journal entry written: {'✅ Yes' if journal_written else '❌ No'}
 
 """
@@ -1002,14 +1013,14 @@ Date/Time: {now_local.strftime('%Y-%m-%d %H:%M %Z')}
 """
 
         if incoming_emails:
-            body += "\n📬 Incoming Emails:\n"
+            body += "\n📬 Incoming Emails this session:\n"
             for email in incoming_emails[:10]:
                 body += f"  - From: {email.get('from', 'Unknown')} | Subject: {email.get('subject', 'No subject')} | Date: {email.get('date', 'Unknown')}\n"
             if len(incoming_emails) > 10:
                 body += f"  ... and {len(incoming_emails) - 10} more.\n"
 
         if sent_emails:
-            body += "\n📤 Sent Emails:\n"
+            body += "\n📤 Sent Emails this session:\n"
             for email in sent_emails[:10]:
                 body += f"  - To: {email.get('to', 'Unknown')} | Subject: {email.get('subject', 'No subject')} | Date: {email.get('date', 'Unknown')}\n"
             if len(sent_emails) > 10:
