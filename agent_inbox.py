@@ -46,8 +46,9 @@ from pathlib import Path
 import socket
 
 
-# Domains that are placeholders or examples — sending to them is almost always a
-# hallucination (e.g. the session-119 "cricket@example.com" incident).
+# Domains that are placeholders or examples. An address at one of these is
+# almost always invented rather than real, so sending to it is refused and the
+# agent is told which address was refused and why.
 RESERVED_EMAIL_DOMAINS = {
     "example.com", "example.org", "example.net", "example.edu",
     "localhost", "test.com", "invalid", "domain.invalid",
@@ -1061,7 +1062,7 @@ if __name__ == "__main__":
     email = os.environ.get("GMAIL_EMAIL", "your-email@gmail.com")
     password = os.environ.get("GMAIL_APP_PASSWORD", "your-app-password")
     operator = os.environ.get("OPERATOR_EMAIL", "operator@example.com")
-    repo_path = os.environ.get("PRIVATE_REPO_PATH", "./curious-private")
+    repo_path = os.environ.get("PRIVATE_REPO_PATH", "./private-brain")
 
     if email and password:
         inbox = AgentInbox(email, password, repo_path, operator_email=operator, agent_name="AI Agent")
