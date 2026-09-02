@@ -979,7 +979,8 @@ class AgentInbox:
                             incoming_emails=None, sent_emails=None,
                             files_edited=0, journal_written=False, journal_entry="",
                             account_balance=None, monthly_limit=None,
-                            scripts_run=None, tasks_completed=0, tasks_added=0):
+                            scripts_run=None, tasks_completed=0, tasks_added=0,
+                            journal_forced=False):
         """
         Send a session digest email to the operator.
 
@@ -1001,6 +1002,15 @@ class AgentInbox:
         balance_line = (f"- Account balance at the provider: ${account_balance:.2f}\n"
                         if account_balance is not None else "")
         scripts_note = ", ".join(scripts_run) if scripts_run else "none"
+        # Three outcomes, not two. A forced entry means there IS a file, written
+        # by the engine because the agent wrote nothing — reporting that as "no
+        # journal entry" reads as a gap in the record that is not there.
+        if journal_forced:
+            journal_note = "⚠️ Forced — the engine wrote a stub; the agent wrote nothing"
+        elif journal_written:
+            journal_note = "✅ Yes"
+        else:
+            journal_note = "❌ No"
 
         body = f"""{self.agent_name} Session Digest
 =======================
@@ -1018,7 +1028,7 @@ Date/Time: {now_local.strftime('%Y-%m-%d %H:%M %Z')}
 - Scripts run: {scripts_note}
 - Tasks completed: {tasks_completed}
 - Tasks added: {tasks_added}
-- Journal entry written: {'✅ Yes' if journal_written else '❌ No'}
+- Journal entry written: {journal_note}
 
 """
 
