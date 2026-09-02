@@ -285,7 +285,11 @@ class AgentInbox:
                     else:
                         self._pending_seen_uids.append(uid_str)
 
-                status, msg_data = mail.uid("FETCH", uid, "(RFC822)")
+                # BODY.PEEK[] rather than RFC822: asking for RFC822 marks the
+                # message read on the server as a side effect of reading it,
+                # which would defeat mark_seen=False and lose any mail whose
+                # session then failed. PEEK is the same bytes without the flag.
+                status, msg_data = mail.uid("FETCH", uid, "(BODY.PEEK[])")
                 if status != "OK" or not msg_data or not msg_data[0]:
                     continue
 
@@ -442,7 +446,14 @@ class AgentInbox:
         if not self.operator_email:
             print("⚠️ No operator email set. Skipping alert.")
             return False
-        body = f"{body}\n\n---\nSent by the {self.agent_name} engine (not saved in the email record).\n"
+        # The subject says who is speaking. These notices are written plainly,
+        # which reads like a person unless the envelope says otherwise.
+        if not subject.lower().startswith("[automated]"):
+            subject = f"[automated] {subject}"
+        body = (f"This is an automated notice from the {self.agent_name} engine. "
+                f"Nobody wrote it.\n\n{body}"
+                f"\n\n---\nSent by the {self.agent_name} engine "
+                f"(not saved in the email record).\n")
         success, error = self._send_raw_email(self.operator_email, subject, body)
         if success:
             print(f"📧 Operator alert sent: {subject}")
@@ -968,7 +979,7 @@ class AgentInbox:
                             incoming_emails=None, sent_emails=None,
                             files_edited=0, journal_written=False, journal_entry="",
                             account_balance=None, monthly_limit=None,
-                            scripts_run=None):
+                            scripts_run=None, tasks_completed=0, tasks_added=0):
         """
         Send a session digest email to the operator.
 
@@ -1005,6 +1016,8 @@ Date/Time: {now_local.strftime('%Y-%m-%d %H:%M %Z')}
 - Remaining this month: ${budget_remaining:.2f}
 {balance_line}- Files written: {files_edited}
 - Scripts run: {scripts_note}
+- Tasks completed: {tasks_completed}
+- Tasks added: {tasks_added}
 - Journal entry written: {'✅ Yes' if journal_written else '❌ No'}
 
 """
