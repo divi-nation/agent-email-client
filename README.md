@@ -10,11 +10,19 @@ libraries only), and saves everything as plain files your agent can read.
 
 - Fetches new Gmail into a local `inbox/`
 - Keeps a copy of everything sent in `sent/`
+- **Replies that thread** — pass a letter's `Message-ID` and the answer arrives
+  attached to the question rather than as a separate message
 - Saves `drafts/` to finish and send later
 - Retries failed sends from an `outbox/` (gives up after 3 tries → `failed/`)
 - Full-text search over every email
 - Threads (whole conversation, oldest first)
 - Labels + read/unread tracking
+- CC and BCC, and several recipients at once
+- **Refuses invented addresses** — anything at `example.com` and the like is
+  rejected with a reason, rather than queued and retried forever
+- **Reads HTML-only mail** by falling back to the text inside it
+- **Never loses a letter to a half-finished save** — fetch without marking read,
+  and mark it once your copy is safely stored
 
 ## Quick start (no coding experience needed)
 
@@ -108,27 +116,45 @@ followed by the body, so a human can read it too.
 - This is for your information only. These are automatically imported with the script.
 
 ```python
-inbox.fetch_unread_and_store() # pull new mail from Gmail
-inbox.search_emails("query") # search all mail (headers + body)
-inbox.get_thread("<message-id>") # whole conversation, oldest first
-inbox.send_email(to, subject, body) # send; returns (ok, error)
-inbox.save_draft(to, subject, body) # save a draft
-inbox.list_emails(status="unread") # list messages (summaries)
-inbox.mark_email_read("msg_001") # mark an email read
-inbox.add_label("msg_001", "label") # tag an email
-inbox.remove_label("msg_001", "label") # remove a tag
-inbox.list_drafts() # list drafts
-inbox.list_outbox() # list messages awaiting retry
-inbox.list_by_label("label") # list emails with a label
-inbox.retry_outbox() # retry failed sends
+# Reading
+inbox.fetch_unread_and_store(mark_seen=True)   # pull new mail; see "Things to know"
+inbox.search_emails("query")                   # search all mail (headers + body)
+inbox.get_thread("<message-id>")               # whole conversation, oldest first
+inbox.list_emails(status="unread", label=None) # list messages (summaries)
+inbox.mark_email_read("msg_001")               # mark an email read
+
+# Writing
+inbox.send_email(to, subject, body,
+                 in_reply_to=None, cc=None, bcc=None)   # returns (ok, error)
+inbox.save_draft(to, subject, body,
+                 in_reply_to=None, cc=None, bcc=None)
+
+# Organising
+inbox.add_label("msg_001", "label")            # tag an email
+inbox.remove_label("msg_001", "label")         # remove a tag
+inbox.list_by_label("label")                   # everything with that tag
+inbox.list_drafts()                            # drafts, unsent
+inbox.list_outbox()                            # messages awaiting retry
+inbox.count_outbox()                           # how many are waiting
+inbox.retry_outbox()                           # try the queue again
 ```
 
-Two more, for the program running the agent rather than the agent itself:
+**`in_reply_to` is what makes a reply a reply.** Pass the `Message-ID` of the
+letter being answered, and begin the subject with `Re: `. Without it the answer
+arrives as a separate message and the person may not connect the two.
+
+`to`, `cc` and `bcc` each take one address or several, comma-separated.
+
+Three more, for the program running the agent rather than the agent itself:
 
 ```python
-inbox.mark_pending_seen() # mark mail read once you have safely saved it
-inbox.send_operator_alert(subject, body) # notify the operator; NOT saved in the email record
+inbox.mark_pending_seen()                      # mark mail read once safely saved
+inbox.send_operator_alert(subject, body)       # notify the operator
+inbox.send_session_digest(...)                 # a run summary for the operator
 ```
+
+Neither of the last two is saved in the email record: they are messages from the
+software about how the agent is running, not part of the agent's correspondence.
 
 ## License
 
