@@ -316,7 +316,7 @@ class AgentInbox:
                         date_local = date_dt.astimezone(self.timezone)
                     else:
                         date_local = datetime.now(self.timezone)
-                except:
+                except Exception:
                     date_local = datetime.now(self.timezone)
 
                 # Extract body: prefer text/plain, fall back to text/html (strip tags)
@@ -830,7 +830,15 @@ class AgentInbox:
         success, error = self._send_raw_email(to, subject, body, in_reply_to, cc, bcc)
 
         if success:
-            self._archive_sent(to, subject, body, in_reply_to, cc, bcc, now_local)
+            try:
+                self._archive_sent(to, subject, body, in_reply_to, cc, bcc, now_local)
+            except Exception as e:
+                # The letter has gone. Reporting a failure here would be untrue,
+                # and sending it again to get a copy would send it twice — so
+                # the only thing left is to say the record is missing.
+                print(f"⚠️ Email sent to {to}, but its copy could not be saved: {e}")
+                print("   The recipient has it; your record of it does not.")
+                return True, None
             print(f"✅ Email sent successfully to {to}")
             return True, None
         else:
