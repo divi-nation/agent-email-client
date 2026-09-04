@@ -20,6 +20,9 @@ libraries only), and saves everything as plain files your agent can read.
   size is recorded; small text ones are saved beside the letter for the agent to
   read if it wants them, and the rest stay in the mail account rather than in
   your repository forever
+- **Letters can be set down, not just answered or refused** — `set_aside` files
+  one to come back to, and it is put back in front of the agent every session
+  until it is answered or picked up
 - Full-text search over every email
 - Threads (whole conversation, oldest first)
 - Labels + read/unread tracking
@@ -69,6 +72,24 @@ prompt = f"... {AGENT_TOOL_INSTRUCTIONS}"
 > `AGENT_TOOL_INSTRUCTIONS` is a block of text that ships with the library and
 > describes the email methods to your agent. Appending it to the prompt is what
 > makes the agent "know" it can check, search, and send email.
+
+**6. Put the mail itself in front of your agent.** Step 5 tells it what it *can*
+do; this tells it what is *waiting*. Two lines, in the same place:
+
+```python
+prompt += "\n\n" + inbox.unread_for_prompt()      # the unread letters, in full
+prompt += "\n\n" + inbox.set_aside_summary()      # what it chose to come back to
+```
+
+Both return `""` or a short line when there is nothing, so they are safe to add
+unconditionally.
+
+> **Why the second line is not optional.** Your agent can set a letter down with
+> `inbox.set_aside("msg_001")` instead of answering it. That is only a deferral
+> if the letter comes back — and `set_aside_summary()` is what brings it back.
+> Without it, a letter your agent decided to return to is simply gone, and it
+> will not know: it will remember choosing to come back to something, and have
+> no way to find it. Skipping this line turns "later" into "never" silently.
 
 **Try it first:** run `python agent_email_config.py` — it fetches new mail and
 retries the outbox, so you can see it working before wiring it in.
@@ -135,10 +156,16 @@ inbox.send_email(to, subject, body,
 inbox.save_draft(to, subject, body,
                  in_reply_to=None, cc=None, bcc=None)
 
+# Setting aside — answering is not the only honest response
+inbox.set_aside("msg_001")                     # come back to it another day
+inbox.pick_up("msg_001")                       # take it off the pile
+inbox.set_aside_summary()                      # what is waiting — put in the prompt
+
 # Organising
 inbox.add_label("msg_001", "label")            # tag an email
 inbox.remove_label("msg_001", "label")         # remove a tag
 inbox.list_by_label("label")                   # everything with that tag
+inbox.list_labels()                            # every label in use, and how many
 inbox.list_drafts()                            # drafts, unsent
 inbox.list_outbox()                            # messages awaiting retry
 inbox.count_outbox()                           # how many are waiting
@@ -150,6 +177,13 @@ letter being answered, and begin the subject with `Re: `. Without it the answer
 arrives as a separate message and the person may not connect the two.
 
 `to`, `cc` and `bcc` each take one address or several, comma-separated.
+
+Two for building the prompt (see step 6 of the quick start):
+
+```python
+inbox.unread_for_prompt()                      # the unread letters, in full
+inbox.set_aside_summary()                      # what it chose to come back to
+```
 
 Three more, for the program running the agent rather than the agent itself:
 

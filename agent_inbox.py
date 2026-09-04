@@ -67,6 +67,11 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 # For anyone using this file as a standalone library: append this to your own
 # prompt so your agent knows it can send and search mail. Step 5 of the README.
 # An engine that describes these tools itself will not need it.
+# Setting a letter aside is common enough to be worth one agreed name. A label
+# an agent invents is one it has to remember inventing; a label the library
+# knows about can be put back in front of it every session without being asked.
+REVIEW_LATER = "review later"
+
 AGENT_TOOL_INSTRUCTIONS = """You have an email inbox (via the `inbox` object). Available methods:
 - inbox.fetch_unread_and_store() # pull new mail from Gmail
 - inbox.search_emails("query") # search all mail (headers + body)
@@ -77,10 +82,19 @@ AGENT_TOOL_INSTRUCTIONS = """You have an email inbox (via the `inbox` object). A
 - inbox.mark_email_read("msg_001") # mark an email read
 - inbox.add_label("msg_001", "label") # tag an email
 - inbox.remove_label("msg_001", "label") # remove a tag
+- inbox.set_aside("msg_001") # come back to this letter another day
+- inbox.pick_up("msg_001") # take it off the set-aside pile
+- inbox.list_labels() # every label in use, and how many carry it
 - inbox.list_drafts() # list drafts
 - inbox.list_outbox() # list messages awaiting retry
 - inbox.list_by_label("label") # list emails with a label
 - inbox.retry_outbox() # retry failed sends
+
+Answering a letter is not the only honest response, and deciding not to answer
+is not the only alternative. You may set one down and come back to it:
+`inbox.set_aside("msg_001")`. It will be put in front of you every session,
+with who wrote and when, until you answer it or `inbox.pick_up` it. Nothing
+expires and nothing nags beyond that line.
 """
 
 
@@ -227,6 +241,17 @@ def describe_attachments(attachments):
 # How much of one letter is put in front of an agent without being asked for.
 # The whole letter is always saved; this is the prompt, not the record.
 MAX_EMAIL_BODY_CHARS = 12000
+
+
+def labels_line(labels):
+    """The one line saying how a letter is filed, or "" when it is not.
+
+    Shown with the letter itself. A label the agent set and is never shown
+    again is worse than no label: it feels like something was done."""
+    kept = [str(l).strip() for l in (labels or []) if str(l).strip()]
+    if not kept:
+        return ""
+    return "Filed as: " + ", ".join(kept)
 
 
 def trim_for_prompt(body, file_rel, limit=MAX_EMAIL_BODY_CHARS):
@@ -885,6 +910,105 @@ class AgentInbox:
     def list_by_label(self, label):
         """Return all emails carrying a given label."""
         return self.list_emails(label=label)
+
+    def unread_for_prompt(self, limit=5, body_limit=MAX_EMAIL_BODY_CHARS):
+        """The unread mail, written out for putting in front of an agent.
+
+        Whole letters, with what came attached and how each one is filed. The
+        library builds this rather than leaving it to every caller, because the
+        parts that are easy to leave out — the labels, the note that more are
+        waiting — are the parts that make deferring a letter work at all."""
+        unread = [e for e in self.load_index()
+                  if e.get("direction") == "incoming" and e.get("status") == "unread"]
+        if not unread:
+            return "No unread email."
+        out = [f"You have {len(unread)} unread email(s). Here is each in full:\n"]
+        for i, e in enumerate(unread[:limit], 1):
+            out.append(f"--- Email #{i} (ID: {e.get('id')}) ---")
+            out.append(f"From: {e.get('from')}")
+            out.append(f"Subject: {e.get('subject')}")
+            out.append(f"Date: {e.get('date')}")
+            if e.get("message_id"):
+                out.append(f"Message-ID: {e.get('message_id')}")
+            if e.get("in_reply_to"):
+                out.append(f"In-Reply-To: {e.get('in_reply_to')}")
+            filed = labels_line(e.get("labels"))
+            if filed:
+                out.append(filed)
+            attached = describe_attachments(e.get("attachments"))
+            if attached:
+                out.append(attached)
+            out.append("Body:")
+            out.append(trim_for_prompt(self._body_of(e), e.get("file", ""),
+                                       body_limit))
+            out.append("")
+        if len(unread) > limit:
+            out.append(f"... and {len(unread) - limit} more unread.")
+        return "\n".join(out)
+
+    def _body_of(self, entry):
+        """The text of a stored letter, without its frontmatter."""
+        path = self.private_repo_path / "record" / "emails" / (entry.get("file") or "")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            return "[Could not read email body]"
+        parts = content.split("---\n", 2)
+        return parts[2].strip() if len(parts) >= 3 else content.strip()
+
+    def list_labels(self):
+        """Every label in use, and how many letters carry it.
+
+        Without this a label can only be found by guessing the exact words it
+        was written with — which means a label put on a letter last week is
+        unreachable by an agent that does not remember writing it."""
+        counts = {}
+        for entry in self.load_index():
+            for label in entry.get("labels") or []:
+                label = str(label).strip()
+                if label:
+                    counts[label] = counts.get(label, 0) + 1
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    def set_aside(self, email_id, label=REVIEW_LATER):
+        """Keep a letter to come back to another day.
+
+        Answering is not the only honest response to a letter, and neither is
+        deciding not to answer. Setting one down is a third thing, and it only
+        works if it is picked back up — which is what set_aside_summary is for."""
+        if self.add_label(email_id, label):
+            return f"Set aside: {email_id} is filed as '{label}'."
+        return (f"{email_id} was already set aside, or there is no letter with "
+                f"that id.")
+
+    def pick_up(self, email_id, label=REVIEW_LATER):
+        """Take a letter off the set-aside pile."""
+        if self.remove_label(email_id, label):
+            return f"Picked up: {email_id} is no longer filed as '{label}'."
+        return f"{email_id} was not set aside."
+
+    def set_aside_summary(self, label=REVIEW_LATER, limit=10):
+        """What is waiting to be come back to. Put this in every prompt.
+
+        The point of the whole mechanism. A letter set aside and never shown
+        again has not been deferred, it has been lost, and the agent will not
+        know the difference — it will remember deciding to come back to
+        something and have no way to find it."""
+        waiting = self.list_by_label(label)
+        if not waiting:
+            return ""
+        lines = [f"You set {len(waiting)} letter"
+                 f"{'s' if len(waiting) != 1 else ''} aside to come back to:"]
+        for e in waiting[:limit]:
+            who = e.get("from") or e.get("to") or "someone"
+            when = str(e.get("date") or "")[:10]
+            lines.append(f"  [{e.get('id')}] {who} — \"{e.get('subject')}\""
+                         f"{f' ({when})' if when else ''}")
+        if len(waiting) > limit:
+            lines.append(f"  ... and {len(waiting) - limit} more.")
+        lines.append("Answer one, or `pick_up` it to stop setting it aside, or "
+                     "leave it here another day — but it will keep asking.")
+        return "\n".join(lines)
 
     # ---------- Outbox Retry System ----------
     def retry_outbox(self):
