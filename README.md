@@ -150,7 +150,7 @@ inbox.fetch_unread_and_store(mark_seen=True)   # pull new mail; see "Things to k
 inbox.search_emails("query")                   # search all mail (headers + body)
 inbox.get_thread("<message-id>")               # whole conversation, oldest first
 inbox.list_emails(status="unread", label=None) # list messages (summaries)
-inbox.mark_email_read("msg_001")               # mark an email read
+inbox.mark_email_read("msg_001")               # mark one dealt with
 
 # Writing
 inbox.send_email(to, subject, body,
@@ -173,6 +173,11 @@ inbox.list_outbox()                            # messages awaiting retry
 inbox.count_outbox()                           # how many are waiting
 inbox.retry_outbox()                           # try the queue again
 ```
+
+**Replying closes the letter out.** Passing `in_reply_to` marks the letter being
+answered as read and takes it off the set-aside pile, so a letter that has been
+answered stops appearing as waiting. Answering something is the clearest
+statement that it has been dealt with; it should not also have to be said.
 
 **`in_reply_to` is what makes a reply a reply.** Pass the `Message-ID` of the
 letter being answered, and begin the subject with `Re: `. Without it the answer

@@ -79,7 +79,7 @@ AGENT_TOOL_INSTRUCTIONS = """You have an email inbox (via the `inbox` object). A
 - inbox.send_email(to, subject, body) # send; returns (ok, error)
 - inbox.save_draft(to, subject, body) # save a draft
 - inbox.list_emails(status="unread") # list messages (summaries)
-- inbox.mark_email_read("msg_001") # mark an email read
+- inbox.mark_email_read("msg_001") # mark one dealt with (replying does this for you)
 - inbox.add_label("msg_001", "label") # tag an email
 - inbox.remove_label("msg_001", "label") # remove a tag
 - inbox.set_aside("msg_001") # come back to this letter another day
@@ -1094,6 +1094,7 @@ class AgentInbox:
                     now_local = datetime.now(self.timezone)
                     self._archive_sent(to, subject, body, in_reply_to, cc, bcc,
                                        now_local, message_id)
+                    self._mark_answered(in_reply_to)
                     file_path.unlink()
                     moved_count += 1
                     print(f"✅ Retry succeeded for {to}")
@@ -1221,12 +1222,49 @@ class AgentInbox:
                 print(f"⚠️ Email sent to {to}, but its copy could not be saved: {e}")
                 print("   The recipient has it; your record of it does not.")
                 return True, None
+            closed = self._mark_answered(in_reply_to)
+            if closed:
+                print(f"📌 Answered — {closed}")
             print(f"✅ Email sent successfully to {to}")
             return True, None
         else:
             self._save_to_outbox(to, subject, body, in_reply_to, cc, bcc, now_local, error)
             print(f"📤 Email queued in outbox for retry: {to}. Error: {error}")
             return False, error
+
+    def _mark_answered(self, in_reply_to):
+        """Close out the letter a reply was written to.
+
+        Answering something is the clearest possible statement that it has been
+        dealt with, so it should not also have to be said. The letter is marked
+        read and taken off the set-aside pile — otherwise a letter that has been
+        answered goes on appearing as waiting, and the one list meant to be
+        trusted fills up with work already done.
+
+        Never raises: the reply has gone, and losing the send over the
+        bookkeeping afterwards would be the wrong trade."""
+        if not in_reply_to:
+            return ""
+        try:
+            index = self.load_index()
+            for entry in index:
+                if (entry.get("message_id") != in_reply_to
+                        or entry.get("direction") != "incoming"):
+                    continue
+                notes = []
+                if entry.get("status") != "read":
+                    entry["status"] = "read"
+                    notes.append("marked read")
+                if REVIEW_LATER in (entry.get("labels") or []):
+                    entry["labels"].remove(REVIEW_LATER)
+                    notes.append("off the set-aside pile")
+                if notes:
+                    self.save_index(index)
+                    return f"{entry.get('id')}: {' and '.join(notes)}."
+                return ""
+        except Exception as e:
+            print(f"⚠️ Replied, but could not close out the original: {e}")
+        return ""
 
     def _save_to_outbox(self, to, subject, body, in_reply_to, cc, bcc, now_local, error):
         """Save an email to the outbox folder for retry."""
