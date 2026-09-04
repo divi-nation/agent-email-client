@@ -83,7 +83,7 @@ AGENT_TOOL_INSTRUCTIONS = """You have an email inbox (via the `inbox` object). A
 - inbox.add_label("msg_001", "label") # tag an email
 - inbox.remove_label("msg_001", "label") # remove a tag
 - inbox.set_aside("msg_001") # come back to this letter another day
-- inbox.pick_up("msg_001") # take it off the set-aside pile
+- inbox.pick_up("msg_001") # take it back up: off the pile, into your unread
 - inbox.list_labels() # every label in use, and how many carry it
 - inbox.list_drafts() # list drafts
 - inbox.list_outbox() # list messages awaiting retry
@@ -996,10 +996,19 @@ class AgentInbox:
                 f"that id.")
 
     def pick_up(self, email_id, label=REVIEW_LATER):
-        """Take a letter off the set-aside pile."""
-        if self.remove_label(email_id, label):
-            return f"Picked up: {email_id} is no longer filed as '{label}'."
-        return f"{email_id} was not set aside."
+        """Take a letter back up: off the set-aside pile and into the unread list.
+
+        It goes back to unread rather than simply losing its label. A letter set
+        aside has usually been marked read as well, and taking the label off on
+        its own would drop it out of both lists at once — gone from the waiting
+        list and not in the unread one, reachable only by searching for a letter
+        the agent would have to remember existed. "Pick up" is the opposite of
+        dismissing something, and it should put the letter back in your hands."""
+        if not self.remove_label(email_id, label):
+            return f"{email_id} was not set aside."
+        self.mark_email_unread(email_id)
+        return (f"Picked up: {email_id} is off the set-aside pile and back among "
+                f"your unread letters.")
 
     def set_aside_summary(self, label=REVIEW_LATER, limit=10):
         """What is waiting to be come back to. Put this in every prompt.
@@ -1353,6 +1362,16 @@ class AgentInbox:
                 print(f"📌 Marked email {email_id} as read.")
                 return True
         print(f"⚠️ Email {email_id} not found or not incoming.")
+        return False
+
+    def mark_email_unread(self, email_id):
+        """Put an incoming email back into the unread list."""
+        index = self.load_index()
+        for entry in index:
+            if entry.get("id") == email_id and entry.get("direction") == "incoming":
+                entry["status"] = "unread"
+                self.save_index(index)
+                return True
         return False
 
     # ---------- Session Digest ----------
