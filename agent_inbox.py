@@ -174,6 +174,27 @@ def _body_parts(msg, _root=True):
                 yield from _body_parts(part, _root=False)
 
 
+def _reference_ids(value):
+    """The Message-IDs listed in a References header, oldest first."""
+    return [m for m in str(value or "").split() if m.startswith("<")]
+
+
+def _parent_of(entry, by_msgid):
+    """The letter this one is answering, as far as the archive can tell.
+
+    In-Reply-To names the direct parent. When that one is not held — it predates
+    the agent, or was sent from somewhere else — References lists the rest of the
+    conversation, and the nearest of those that IS held keeps this in the same
+    thread instead of starting a second one."""
+    direct = entry.get("in_reply_to")
+    if direct and direct in by_msgid:
+        return direct
+    for mid in reversed(_reference_ids(entry.get("references"))):
+        if mid in by_msgid:
+            return mid
+    return None
+
+
 def _human_size(n):
     n = int(n or 0)
     if n < 1024:
@@ -201,6 +222,25 @@ def describe_attachments(attachments):
             lines.append(f"  {a.get('name')} ({size}, {a.get('type')}) — kept in "
                          f"your mail account; it cannot be read here")
     return "\n".join(lines)
+
+
+# How much of one letter is put in front of an agent without being asked for.
+# The whole letter is always saved; this is the prompt, not the record.
+MAX_EMAIL_BODY_CHARS = 12000
+
+
+def trim_for_prompt(body, file_rel, limit=MAX_EMAIL_BODY_CHARS):
+    """Shorten a letter for the prompt, saying where the rest of it is.
+
+    A newsletter can carry a hundred thousand characters, and five of them would
+    spend a session's whole budget before the agent had done anything."""
+    body = body or ""
+    if len(body) <= limit:
+        return body
+    kept = body[:limit].rstrip()
+    return (f"{kept}\n\n[The letter goes on for {len(body) - len(kept)} more "
+            f"characters. The whole of it is at record/emails/{file_rel} — "
+            f"`read_file` it if you want the rest.]")
 
 
 def _decode_part(part):
@@ -302,6 +342,16 @@ class AgentInbox:
         if nums:
             return f"msg_{max(nums) + 1:03d}"
         return "msg_001"
+
+    def reference_chain(self, in_reply_to):
+        """The References header for a reply: the conversation so far, then the
+        letter being answered. Empty when this is not a reply."""
+        if not in_reply_to:
+            return None
+        parent = next((e for e in self.load_index()
+                       if e.get("message_id") == in_reply_to), None)
+        earlier = _reference_ids(parent.get("references")) if parent else []
+        return " ".join(earlier + [in_reply_to])
 
     def new_message_id(self):
         """A Message-ID for a letter about to be sent.
@@ -511,6 +561,7 @@ class AgentInbox:
                     "subject": subject,
                     "message_id": msg_id,
                     "in_reply_to": msg.get("In-Reply-To", "").strip() or None,
+                    "references": msg.get("References", "").strip() or None,
                     "labels": [],
                     "attachments": attachments,
                 }
@@ -535,6 +586,7 @@ class AgentInbox:
                     "subject": subject,
                     "message_id": msg_id,
                     "in_reply_to": frontmatter["in_reply_to"],
+                    "references": frontmatter["references"],
                     "labels": [],
                     "attachments": attachments,
                 })
@@ -690,7 +742,7 @@ class AgentInbox:
         while cur and cur in by_msgid and cur not in seen:
             seen.add(cur)
             chain.append(cur)
-            cur = by_msgid[cur].get("in_reply_to")
+            cur = _parent_of(by_msgid[cur], by_msgid)
         root_ids = list(reversed(chain))
 
         # Walk down to all descendants (replies)
@@ -699,7 +751,8 @@ class AgentInbox:
         while queue:
             parent_id = queue.pop(0)
             children = [e.get("message_id") for e in index
-                        if e.get("in_reply_to") == parent_id
+                        if e.get("message_id")
+                        and _parent_of(e, by_msgid) == parent_id
                         and e.get("message_id") not in thread_ids]
             thread_ids.extend(children)
             queue.extend(children)
@@ -728,6 +781,7 @@ class AgentInbox:
                 "date": entry.get("date", entry.get("date_created", "")),
                 "message_id": entry.get("message_id", ""),
                 "in_reply_to": entry.get("in_reply_to"),
+                "references": entry.get("references"),
                 "body": body,
             })
         result.sort(key=lambda e: e.get("date", ""))
@@ -885,9 +939,9 @@ class AgentInbox:
 
                 print(f"📤 Retrying email to {to}...")
                 message_id = self.new_message_id()
-                success, error = self._send_raw_email(to, subject, body,
-                                                      in_reply_to, cc, bcc,
-                                                      message_id)
+                success, error = self._send_raw_email(
+                    to, subject, body, in_reply_to, cc, bcc, message_id,
+                    self.reference_chain(in_reply_to))
 
                 if success:
                     now_local = datetime.now(self.timezone)
@@ -931,7 +985,7 @@ class AgentInbox:
 
     # ---------- Send Outgoing Emails ----------
     def _send_raw_email(self, to, subject, body, in_reply_to=None, cc=None,
-                        bcc=None, message_id=None):
+                        bcc=None, message_id=None, references=None):
         """Internal: send an email via SMTP. Returns (success, error_message)."""
         if not self.email_address or not self.app_password:
             return False, "Email credentials missing"
@@ -949,7 +1003,10 @@ class AgentInbox:
             msg["Message-ID"] = message_id or self.new_message_id()
             if in_reply_to:
                 msg["In-Reply-To"] = in_reply_to
-                msg["References"] = in_reply_to
+                # The whole conversation, not just the letter being answered.
+                # Some mail programs thread on References alone, and one naming
+                # a single message puts a long exchange in two pieces.
+                msg["References"] = references or in_reply_to
             if cc:
                 msg["Cc"] = cc
             if bcc:
@@ -1002,8 +1059,9 @@ class AgentInbox:
         print(f"📤 Sending email to {to}...")
 
         message_id = self.new_message_id()
-        success, error = self._send_raw_email(to, subject, body, in_reply_to, cc,
-                                              bcc, message_id)
+        success, error = self._send_raw_email(
+            to, subject, body, in_reply_to, cc, bcc, message_id,
+            self.reference_chain(in_reply_to))
 
         if success:
             try:
