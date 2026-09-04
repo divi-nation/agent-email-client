@@ -96,6 +96,17 @@ mail it is one short line.
 **Try it first:** run `python agent_email_config.py` — it fetches new mail and
 retries the outbox, so you can see it working before wiring it in.
 
+**Check it still works after you change it.** `test_agent_inbox.py` ships beside
+the library and needs nothing installed and no network — it runs against a
+stand-in for Gmail:
+
+```bash
+python -m unittest test_agent_inbox
+```
+
+82 tests, about half a second. Worth running before you trust a change: most of
+what this library does wrong, it does quietly.
+
 ## What it outputs
 
 Under your `EMAIL_ARCHIVE_REPO_PATH`, it creates:
@@ -121,6 +132,7 @@ followed by the body, so a human can read it too.
 |---|---|
 | `agent_inbox.py` | The library itself (you don't edit this). |
 | `agent_email_config.py` | Your settings — the only file you edit. |
+| `test_agent_inbox.py` | 82 tests. No network, nothing to install. |
 | `README.md` | This file. |
 
 ## Things to know
