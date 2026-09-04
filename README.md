@@ -74,22 +74,24 @@ prompt = f"... {AGENT_TOOL_INSTRUCTIONS}"
 > makes the agent "know" it can check, search, and send email.
 
 **6. Put the mail itself in front of your agent.** Step 5 tells it what it *can*
-do; this tells it what is *waiting*. Two lines, in the same place:
+do; this tells it what is *waiting*. One more line, in the same place:
 
 ```python
-prompt += "\n\n" + inbox.unread_for_prompt()      # the unread letters, in full
-prompt += "\n\n" + inbox.set_aside_summary()      # what it chose to come back to
+prompt += "\n\n" + inbox.mail_for_prompt()
 ```
 
-Both return `""` or a short line when there is nothing, so they are safe to add
-unconditionally.
+That is the unread letters in full, and underneath them any letter your agent
+set aside to come back to. It is safe to add unconditionally — when there is no
+mail it is one short line.
 
-> **Why the second line is not optional.** Your agent can set a letter down with
-> `inbox.set_aside("msg_001")` instead of answering it. That is only a deferral
-> if the letter comes back — and `set_aside_summary()` is what brings it back.
-> Without it, a letter your agent decided to return to is simply gone, and it
-> will not know: it will remember choosing to come back to something, and have
-> no way to find it. Skipping this line turns "later" into "never" silently.
+> **Why it is one call and not two.** Your agent can set a letter down with
+> `inbox.set_aside("msg_001")` instead of answering it, and it is told that a
+> letter set down comes back. That is only true if something puts it back, so
+> `mail_for_prompt()` does both halves rather than leaving the second to be
+> remembered. Left out, a letter your agent decided to return to is simply gone
+> — and it will not know: it will remember choosing to come back to something
+> and have no way to find it. If you would rather place the two sections
+> yourself, they are `unread_for_prompt()` and `set_aside_summary()`.
 
 **Try it first:** run `python agent_email_config.py` — it fetches new mail and
 retries the outbox, so you can see it working before wiring it in.
@@ -178,11 +180,12 @@ arrives as a separate message and the person may not connect the two.
 
 `to`, `cc` and `bcc` each take one address or several, comma-separated.
 
-Two for building the prompt (see step 6 of the quick start):
+For building the prompt (see step 6 of the quick start):
 
 ```python
-inbox.unread_for_prompt()                      # the unread letters, in full
-inbox.set_aside_summary()                      # what it chose to come back to
+inbox.mail_for_prompt()                        # everything below, in one call
+inbox.unread_for_prompt()                      # just the unread letters, in full
+inbox.set_aside_summary()                      # just what it set aside
 ```
 
 Three more, for the program running the agent rather than the agent itself:

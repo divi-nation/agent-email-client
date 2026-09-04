@@ -92,9 +92,9 @@ AGENT_TOOL_INSTRUCTIONS = """You have an email inbox (via the `inbox` object). A
 
 Answering a letter is not the only honest response, and deciding not to answer
 is not the only alternative. You may set one down and come back to it:
-`inbox.set_aside("msg_001")`. It will be put in front of you every session,
-with who wrote and when, until you answer it or `inbox.pick_up` it. Nothing
-expires and nothing nags beyond that line.
+`inbox.set_aside("msg_001")`. It is put back in front of you, with who wrote
+and when, until you answer it or `inbox.pick_up` it. Nothing expires and
+nothing nags beyond that line.
 """
 
 
@@ -910,6 +910,20 @@ class AgentInbox:
     def list_by_label(self, label):
         """Return all emails carrying a given label."""
         return self.list_emails(label=label)
+
+    def mail_for_prompt(self, limit=5, body_limit=MAX_EMAIL_BODY_CHARS):
+        """The whole mail situation, for putting in front of an agent.
+
+        The unread letters and the ones set aside, in one call, because the
+        agent is told that a letter it sets down will come back — and that
+        promise is only true if whoever wired this library up remembered the
+        second half. One line to add is a promise that keeps itself; two lines
+        is a promise with a way to fail silently."""
+        parts = [self.unread_for_prompt(limit=limit, body_limit=body_limit)]
+        waiting = self.set_aside_summary()
+        if waiting:
+            parts.append(waiting)
+        return "\n\n".join(parts)
 
     def unread_for_prompt(self, limit=5, body_limit=MAX_EMAIL_BODY_CHARS):
         """The unread mail, written out for putting in front of an agent.
