@@ -39,7 +39,8 @@ import smtplib
 import email
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.utils import formatdate, parsedate_to_datetime
+from email.utils import formatdate, parsedate_to_datetime, make_msgid
+from email.header import decode_header, make_header
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -108,6 +109,98 @@ def validate_email_address(value):
                        f"this is almost certainly not a real address. Verify against "
                        f"search results or your directory before sending.")
     return True, ""
+
+
+def _decode_header(value):
+    """Return a header as text, whatever encoding it arrived in.
+
+    A header carrying anything but plain ASCII — an accent, an em dash, an
+    emoji — is transmitted encoded, as `=?UTF-8?Q?...?=`. Stored that way it is
+    unreadable, and it does not match a search for the words it contains."""
+    if not value:
+        return ""
+    try:
+        return str(make_header(decode_header(str(value)))).strip()
+    except Exception:
+        # A malformed header is worth keeping as it came rather than losing.
+        return str(value).strip()
+
+
+# An attachment small enough, and text enough, to keep beside the letter. The
+# bytes of anything else are left in the mail account: both repositories are
+# cloned at the start of every session and git keeps a file for good, so storing
+# one PDF is a cost on every run from then on, to hold a second copy of something
+# the mail account already holds reliably.
+ATTACHMENT_TEXT_SUFFIXES = (".txt", ".md", ".csv", ".json", ".yaml", ".yml",
+                            ".log", ".ini", ".toml")
+MAX_STORED_ATTACHMENT_BYTES = 32000
+# One message cannot fill the index with its own attachment list.
+MAX_ATTACHMENTS_LISTED = 10
+
+
+def _is_attachment(part):
+    """Is this part a file someone attached, rather than the letter itself?
+
+    A part with no filename is the message. One marked `inline` is usually a
+    signature logo or a tracking pixel, and listing those would bury the
+    attachments that were meant on every letter sent from an office."""
+    if part.get_content_maintype() == "multipart":
+        return False
+    return bool(part.get_filename()) and part.get_content_disposition() != "inline"
+
+
+def _readable_as_text(filename, content_type):
+    """Can this be kept as words, rather than as bytes nothing here can read?"""
+    if str(content_type or "").startswith("text/"):
+        return True
+    return str(filename or "").lower().endswith(ATTACHMENT_TEXT_SUFFIXES)
+
+
+def _body_parts(msg, _root=True):
+    """The parts of a message that are the letter, not something attached to it.
+
+    `email`'s own walk() descends into an attached message and hands back its
+    text as though it belonged here — so a forwarded email supplies the body and
+    whatever the sender wrote above it is thrown away. This stops at anything
+    attached instead of going through it."""
+    if not _root and (_is_attachment(msg)
+                      or msg.get_content_maintype() == "message"):
+        return
+    yield msg
+    if msg.is_multipart():
+        payload = msg.get_payload()
+        if isinstance(payload, list):
+            for part in payload:
+                yield from _body_parts(part, _root=False)
+
+
+def _human_size(n):
+    n = int(n or 0)
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def describe_attachments(attachments):
+    """The lines shown to the agent for what came with a letter.
+
+    Says of each one whether it can be read, and where. Nothing is put in front
+    of the agent unasked: a file that was kept says where it is, and the agent
+    reads it if it wants it."""
+    if not attachments:
+        return ""
+    lines = ["Attachments:"]
+    for a in attachments[:MAX_ATTACHMENTS_LISTED]:
+        size = _human_size(a.get("size"))
+        if a.get("saved"):
+            lines.append(f"  {a.get('name')} ({size}) — saved at {a['saved']}, "
+                         f"`read_file` it if you want it")
+        else:
+            lines.append(f"  {a.get('name')} ({size}, {a.get('type')}) — kept in "
+                         f"your mail account; it cannot be read here")
+    return "\n".join(lines)
 
 
 def _decode_part(part):
@@ -210,9 +303,66 @@ class AgentInbox:
             return f"msg_{max(nums) + 1:03d}"
         return "msg_001"
 
+    def new_message_id(self):
+        """A Message-ID for a letter about to be sent.
+
+        Built from the sending address's own domain. The default would use this
+        machine's hostname, which says where the agent runs to everyone it
+        writes to."""
+        domain = (self.email_address or "").rsplit("@", 1)[-1] or "localhost"
+        return make_msgid(domain=domain)
+
     def _sanitize_filename(self, text):
         """Clean up a string for safe use in a filename."""
         return re.sub(r'[^a-zA-Z0-9_.-]', '_', text)[:80]
+
+    def _store_attachments(self, msg, date_local):
+        """Note what was attached, and keep the small text ones beside the letter.
+
+        Returns a list of {name, type, size} — with `saved` naming a path for
+        anything kept. The bytes of a PDF or an image are not stored; see the
+        note beside MAX_STORED_ATTACHMENT_BYTES."""
+        out = []
+        if not msg.is_multipart():
+            return out
+        stamp = date_local.strftime("%Y-%m-%d_%H-%M-%S")
+        for part in msg.walk():
+            if len(out) >= MAX_ATTACHMENTS_LISTED:
+                break
+            if not _is_attachment(part):
+                continue
+            name = _decode_header(part.get_filename()) or "attachment"
+            ctype = part.get_content_type()
+            try:
+                payload = part.get_payload(decode=True) or b""
+            except Exception:
+                payload = b""
+            size = len(payload)
+            if not size:
+                # An attached email decodes to nothing, because its payload is
+                # a message rather than bytes. Reporting "0 B" would read as an
+                # empty file rather than one this cannot open.
+                try:
+                    size = len(part.as_bytes())
+                except Exception:
+                    size = 0
+            record = {"name": name, "type": ctype, "size": size}
+            if (_readable_as_text(name, ctype) and payload
+                    and len(payload) <= MAX_STORED_ATTACHMENT_BYTES):
+                safe = self._sanitize_filename(name) or "attachment"
+                path = (self.private_repo_path / "record" / "emails"
+                        / "attachments" / f"{stamp}_{safe}")
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(payload.decode("utf-8", errors="ignore"),
+                                    encoding="utf-8")
+                    # Relative to the repository root, which is how the agent
+                    # asks for a file to be read.
+                    record["saved"] = f"record/emails/attachments/{stamp}_{safe}"
+                except Exception as e:
+                    print(f"⚠️ Could not save attachment {name}: {e}")
+            out.append(record)
+        return out
 
     def _save_email_file(self, folder, filename, content, frontmatter):
         """Write an email file with YAML frontmatter."""
@@ -223,7 +373,10 @@ class AgentInbox:
                     value = value.replace('"', '\\"')
                     lines.append(f'{key}: "{value}"')
                 else:
-                    lines.append(f'{key}: {value}')
+                    # JSON, not repr: JSON is valid YAML, and a list of objects
+                    # holding a filename with a quote in it has to survive being
+                    # written down.
+                    lines.append(f'{key}: {json.dumps(value)}')
         lines.append("---")
         lines.append("")
         lines.append(content)
@@ -307,8 +460,8 @@ class AgentInbox:
                     continue
 
                 # Parse headers
-                subject = msg.get("Subject", "(no subject)").strip()
-                from_addr = msg.get("From", "unknown").strip()
+                subject = _decode_header(msg.get("Subject")) or "(no subject)"
+                from_addr = _decode_header(msg.get("From")) or "unknown"
                 date_str = msg.get("Date", "")
                 try:
                     date_dt = parsedate_to_datetime(date_str)
@@ -324,12 +477,15 @@ class AgentInbox:
                 if msg.is_multipart():
                     text_part = None
                     html_part = None
-                    for part in msg.walk():
+                    # An attached file is not the letter. Without this a
+                    # forwarded message supplies the body and whatever the
+                    # sender wrote above it is thrown away.
+                    for part in _body_parts(msg):
                         if part.get_content_type() == "text/plain":
                             text_part = part
                             break
                     if text_part is None:
-                        for part in msg.walk():
+                        for part in _body_parts(msg):
                             if part.get_content_type() == "text/html":
                                 html_part = part
                                 break
@@ -344,6 +500,8 @@ class AgentInbox:
                     else:
                         body = payload
 
+                attachments = self._store_attachments(msg, date_local)
+
                 # Build frontmatter
                 frontmatter = {
                     "direction": "incoming",
@@ -354,6 +512,7 @@ class AgentInbox:
                     "message_id": msg_id,
                     "in_reply_to": msg.get("In-Reply-To", "").strip() or None,
                     "labels": [],
+                    "attachments": attachments,
                 }
 
                 new_id = self._generate_email_id(existing_ids)
@@ -377,6 +536,7 @@ class AgentInbox:
                     "message_id": msg_id,
                     "in_reply_to": frontmatter["in_reply_to"],
                     "labels": [],
+                    "attachments": attachments,
                 })
                 if msg_id:
                     seen_message_ids.add(msg_id)
@@ -558,6 +718,10 @@ class AgentInbox:
                     body = parts[2].strip()
             result.append({
                 "id": entry.get("id"),
+                # Which side of the conversation this is. Until sent mail
+                # carried a Message-ID nothing outgoing could appear in a
+                # thread, so there was only ever one answer.
+                "direction": entry.get("direction", ""),
                 "from": entry.get("from", ""),
                 "to": entry.get("to", ""),
                 "subject": entry.get("subject", ""),
@@ -720,11 +884,15 @@ class AgentInbox:
                     continue
 
                 print(f"📤 Retrying email to {to}...")
-                success, error = self._send_raw_email(to, subject, body, in_reply_to, cc, bcc)
+                message_id = self.new_message_id()
+                success, error = self._send_raw_email(to, subject, body,
+                                                      in_reply_to, cc, bcc,
+                                                      message_id)
 
                 if success:
                     now_local = datetime.now(self.timezone)
-                    self._archive_sent(to, subject, body, in_reply_to, cc, bcc, now_local)
+                    self._archive_sent(to, subject, body, in_reply_to, cc, bcc,
+                                       now_local, message_id)
                     file_path.unlink()
                     moved_count += 1
                     print(f"✅ Retry succeeded for {to}")
@@ -762,7 +930,8 @@ class AgentInbox:
             print(f"📤 Outbox retry complete. Sent: {moved_count}, Failed: {failed_count}")
 
     # ---------- Send Outgoing Emails ----------
-    def _send_raw_email(self, to, subject, body, in_reply_to=None, cc=None, bcc=None):
+    def _send_raw_email(self, to, subject, body, in_reply_to=None, cc=None,
+                        bcc=None, message_id=None):
         """Internal: send an email via SMTP. Returns (success, error_message)."""
         if not self.email_address or not self.app_password:
             return False, "Email credentials missing"
@@ -773,6 +942,11 @@ class AgentInbox:
             msg["To"] = to
             msg["Subject"] = subject
             msg["Date"] = formatdate(localtime=True)
+            # Without a Message-ID of its own, a sent letter cannot be referred
+            # to: a reply to it names an id nothing has, so the reply arrives
+            # with no parent and the conversation reads as one-sided. The
+            # caller passes one in so it can be saved with the copy.
+            msg["Message-ID"] = message_id or self.new_message_id()
             if in_reply_to:
                 msg["In-Reply-To"] = in_reply_to
                 msg["References"] = in_reply_to
@@ -827,11 +1001,14 @@ class AgentInbox:
         now_local = datetime.now(self.timezone)
         print(f"📤 Sending email to {to}...")
 
-        success, error = self._send_raw_email(to, subject, body, in_reply_to, cc, bcc)
+        message_id = self.new_message_id()
+        success, error = self._send_raw_email(to, subject, body, in_reply_to, cc,
+                                              bcc, message_id)
 
         if success:
             try:
-                self._archive_sent(to, subject, body, in_reply_to, cc, bcc, now_local)
+                self._archive_sent(to, subject, body, in_reply_to, cc, bcc,
+                                   now_local, message_id)
             except Exception as e:
                 # The letter has gone. Reporting a failure here would be untrue,
                 # and sending it again to get a copy would send it twice — so
@@ -875,7 +1052,8 @@ class AgentInbox:
         self._save_email_file("outbox", filename, body, frontmatter)
         print(f"📤 Email saved to outbox for retry: {filename}")
 
-    def _archive_sent(self, to, subject, body, in_reply_to, cc, bcc, now_local):
+    def _archive_sent(self, to, subject, body, in_reply_to, cc, bcc, now_local,
+                      message_id=""):
         """Save a sent email to the sent/ folder and update index."""
         index = self.load_index()
         existing_ids = [entry.get("id") for entry in index]
@@ -891,6 +1069,7 @@ class AgentInbox:
             "date": now_local.isoformat(),
             "to": to,
             "subject": subject,
+            "message_id": message_id,
             "in_reply_to": in_reply_to,
             "cc": cc,
             "bcc": bcc,
@@ -908,6 +1087,7 @@ class AgentInbox:
             "date": now_local.isoformat(),
             "to": to,
             "subject": subject,
+            "message_id": message_id,
             "in_reply_to": in_reply_to,
             "cc": cc,
             "bcc": bcc,

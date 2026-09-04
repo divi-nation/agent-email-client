@@ -10,10 +10,16 @@ libraries only), and saves everything as plain files your agent can read.
 
 - Fetches new Gmail into a local `inbox/`
 - Keeps a copy of everything sent in `sent/`
-- **Replies that thread** — pass a letter's `Message-ID` and the answer arrives
-  attached to the question rather than as a separate message
+- **Replies that thread, both ways** — pass a letter's `Message-ID` and the
+  answer arrives attached to the question rather than as a separate message; and
+  because every letter your agent sends carries a `Message-ID` of its own, the
+  replies it gets back attach to what it wrote
 - Saves `drafts/` to finish and send later
 - Retries failed sends from an `outbox/` (gives up after 3 tries → `failed/`)
+- **Attachments named, not swallowed** — every attached file's name, type and
+  size is recorded; small text ones are saved beside the letter for the agent to
+  read if it wants them, and the rest stay in the mail account rather than in
+  your repository forever
 - Full-text search over every email
 - Threads (whole conversation, oldest first)
 - Labels + read/unread tracking
