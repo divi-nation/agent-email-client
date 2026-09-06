@@ -1523,6 +1523,20 @@ Sent by {self.agent_name}, autonomous AI agent.
 # =====================================================================
 if __name__ == "__main__":
     import os
+    import sys
+
+    # Written out here rather than imported, so this file stays the one file
+    # the library ships. The engine keeps the same few lines in console.py and
+    # calls them from its own entry points; this copy must be byte-identical to
+    # that one, and an import would give whoever holds the library on its own a
+    # missing module. A Windows console is cp1252 by default and stdout encodes
+    # strictly, so the first status glyph would otherwise end the run.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
     email = os.environ.get("GMAIL_EMAIL", "your-email@gmail.com")
     password = os.environ.get("GMAIL_APP_PASSWORD", "your-app-password")
     operator = os.environ.get("OPERATOR_EMAIL", "operator@example.com")
