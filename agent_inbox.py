@@ -130,14 +130,17 @@ def _decode_header(value):
 
     A header carrying anything but plain ASCII — an accent, an em dash, an
     emoji — is transmitted encoded, as `=?UTF-8?Q?...?=`. Stored that way it is
-    unreadable, and it does not match a search for the words it contains."""
+    unreadable, and it does not match a search for the words it contains.
+
+    CR and LF are stripped: a header is one logical line, and a newline
+    embedded via encoded-word becomes a line break in the stored frontmatter."""
     if not value:
         return ""
     try:
-        return str(make_header(decode_header(str(value)))).strip()
+        result = str(make_header(decode_header(str(value))))
     except Exception:
-        # A malformed header is worth keeping as it came rather than losing.
-        return str(value).strip()
+        result = str(value)
+    return result.replace("\r", "").replace("\n", " ").strip()
 
 
 # An attachment small enough, and text enough, to keep beside the letter. The
@@ -444,14 +447,11 @@ class AgentInbox:
         lines = ["---"]
         for key, value in frontmatter.items():
             if value is not None:
-                if isinstance(value, str):
-                    value = value.replace('"', '\\"')
-                    lines.append(f'{key}: "{value}"')
-                else:
-                    # JSON, not repr: JSON is valid YAML, and a list of objects
-                    # holding a filename with a quote in it has to survive being
-                    # written down.
-                    lines.append(f'{key}: {json.dumps(value)}')
+                # Every value is serialized with json.dumps — strings included.
+                # JSON is valid YAML, and json.dumps escapes quotes, newlines,
+                # and control characters, so a crafted header value cannot break
+                # out of the value field and inject a new frontmatter key.
+                lines.append(f'{key}: {json.dumps(value)}')
         lines.append("---")
         lines.append("")
         lines.append(content)
@@ -866,6 +866,34 @@ class AgentInbox:
         """Return all saved drafts (not yet sent)."""
         return self.list_emails(status="draft")
 
+    @staticmethod
+    def _parse_frontmatter(text):
+        """Parse YAML frontmatter written by _save_email_file.
+
+        Values are JSON-encoded (strings, ints, lists), so json.loads recovers
+        them safely. Only known keys are accepted — an injected line whose key
+        is not in the allowlist is silently dropped."""
+        allowed = {
+            "id", "direction", "status", "date", "date_created", "updated_at",
+            "from", "to", "cc", "bcc", "subject", "message_id", "in_reply_to",
+            "references", "labels", "attachments", "retry_count", "last_retry",
+            "last_error",
+        }
+        result = {}
+        for line in text.strip().split("\n"):
+            colon = line.find(": ")
+            if colon < 0:
+                continue
+            key = line[:colon].strip()
+            if key not in allowed:
+                continue
+            raw = line[colon + 2:]
+            try:
+                result[key] = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                result[key] = raw.strip().strip('"')
+        return result
+
     def list_outbox(self):
         """Return emails queued in the outbox awaiting retry.
 
@@ -882,11 +910,7 @@ class AgentInbox:
                 parts = content.split("---\n", 2)
                 if len(parts) < 3:
                     continue
-                frontmatter = {}
-                for line in parts[1].strip().split("\n"):
-                    if ": " in line:
-                        key, value = line.split(": ", 1)
-                        frontmatter[key.strip()] = value.strip().strip('"')
+                frontmatter = self._parse_frontmatter(parts[1])
                 out.append({
                     "id": frontmatter.get("id"),
                     "status": "outbox",
@@ -1063,14 +1087,7 @@ class AgentInbox:
                     print(f"⚠️ Invalid outbox file format: {file_path.name}")
                     continue
 
-                frontmatter_lines = parts[1].strip().split("\n")
-                frontmatter = {}
-                for line in frontmatter_lines:
-                    if ": " in line:
-                        key, value = line.split(": ", 1)
-                        key = key.strip()
-                        value = value.strip().strip('"')
-                        frontmatter[key] = value
+                frontmatter = self._parse_frontmatter(parts[1])
 
                 body = parts[2].strip()
                 to = frontmatter.get("to")
@@ -1109,19 +1126,9 @@ class AgentInbox:
                         new_frontmatter = frontmatter.copy()
                         new_frontmatter["retry_count"] = retry_count
                         new_frontmatter["last_retry"] = datetime.now(self.timezone).isoformat()
-                        new_frontmatter["last_error"] = error
-                        lines = ["---"]
-                        for key, value in new_frontmatter.items():
-                            if value is not None:
-                                if isinstance(value, str):
-                                    value = value.replace('"', '\\"')
-                                    lines.append(f'{key}: "{value}"')
-                                else:
-                                    lines.append(f'{key}: {value}')
-                        lines.append("---")
-                        lines.append("")
-                        lines.append(body)
-                        file_path.write_text("\n".join(lines), encoding="utf-8")
+                        new_frontmatter["last_error"] = str(error or "")
+                        self._save_email_file("outbox", file_path.name, body,
+                                              new_frontmatter)
                         print(f"🔄 Retry failed for {to}. Retry count: {retry_count}. Error: {error}")
 
             except Exception as e:
@@ -1132,6 +1139,12 @@ class AgentInbox:
             print(f"📤 Outbox retry complete. Sent: {moved_count}, Failed: {failed_count}")
 
     # ---------- Send Outgoing Emails ----------
+    @staticmethod
+    def _reject_header_injection(value, name):
+        """Refuse a value that would inject a new header line."""
+        if value and re.search(r"[\r\n]", str(value)):
+            raise ValueError(f"{name} contains CR/LF — possible header injection")
+
     def _send_raw_email(self, to, subject, body, in_reply_to=None, cc=None,
                         bcc=None, message_id=None, references=None):
         """Internal: send an email via SMTP. Returns (success, error_message)."""
@@ -1139,6 +1152,10 @@ class AgentInbox:
             return False, "Email credentials missing"
 
         try:
+            for label, val in [("To", to), ("Subject", subject),
+                               ("Cc", cc), ("Bcc", bcc)]:
+                self._reject_header_injection(val, label)
+
             msg = MIMEMultipart()
             msg["From"] = self.email_address
             msg["To"] = to

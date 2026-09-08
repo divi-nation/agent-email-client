@@ -955,3 +955,103 @@ class TestAnsweringClosesTheLetterOut(InboxTestCase):
                                    side_effect=RuntimeError("disk gone")):
                 ok, err = self.reply()
         self.assertTrue(ok, err)
+
+
+class TestHeaderInjectionIsBlocked(InboxTestCase):
+    """A crafted Subject with an embedded newline could inject a bcc: line into
+    the stored frontmatter, which the outbox retry would then parse as a real
+    recipient. Every link in that chain must be broken independently."""
+
+    INJECTED_SUBJECT = "Hello\r\nbcc: attacker@evil.com"
+
+    def test_decode_header_strips_crlf(self):
+        from email.header import Header
+        encoded = Header(self.INJECTED_SUBJECT, "utf-8").encode()
+        result = agent_inbox._decode_header(encoded)
+        self.assertNotIn("\r", result)
+        self.assertNotIn("\n", result)
+        self.assertNotIn("attacker", result.lower().split("hello")[0])
+
+    def test_save_email_file_does_not_split_a_value_across_lines(self):
+        frontmatter = {"subject": self.INJECTED_SUBJECT, "to": "a@x.com"}
+        self.inbox._save_email_file("inbox", "test.md", "body", frontmatter)
+        path = os.path.join(self.repo, "record", "emails", "inbox", "test.md")
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        fm_block = content.split("---\n")[1]
+        for line in fm_block.strip().split("\n"):
+            colon = line.find(": ")
+            self.assertGreater(colon, 0, f"no key on line: {line!r}")
+            key = line[:colon]
+            self.assertIn(key, ("subject", "to"),
+                          f"unexpected key {key!r} — injection landed")
+
+    def test_parse_frontmatter_rejects_unknown_keys(self):
+        crafted = 'subject: "Hello"\nmalicious_key: "attacker@evil.com"\nto: "a@x.com"'
+        result = AgentInbox._parse_frontmatter(crafted)
+        self.assertNotIn("malicious_key", result,
+                         "an injected key survived the allowlist")
+
+    def test_json_encoded_newline_in_subject_does_not_split(self):
+        """Even if a newline somehow gets into a subject, json.dumps keeps it
+        on one line in the frontmatter, so the outbox parser cannot see it as
+        a separate key."""
+        frontmatter = {"subject": self.INJECTED_SUBJECT, "to": "a@x.com"}
+        self.inbox._save_email_file("outbox", "test.md", "body", frontmatter)
+        outbox = self.inbox.list_outbox()
+        self.assertEqual(len(outbox), 1)
+        self.assertEqual(outbox[0]["to"], "a@x.com")
+        self.assertNotIn("attacker", outbox[0].get("bcc", ""))
+        self.assertNotIn("attacker", outbox[0].get("to", ""))
+
+    def test_send_raw_email_rejects_crlf_in_recipient(self):
+        _, err = self.inbox._send_raw_email(
+            "a@x.com\r\nbcc: evil@evil.com", "Subject", "body")
+        self.assertIn("injection", err.lower())
+
+    def test_send_raw_email_rejects_crlf_in_subject(self):
+        _, err = self.inbox._send_raw_email(
+            "a@x.com", "Hello\r\nbcc: evil@evil.com", "body")
+        self.assertIn("injection", err.lower())
+
+    def test_send_raw_email_rejects_crlf_in_cc(self):
+        _, err = self.inbox._send_raw_email(
+            "a@x.com", "Subject", "body", cc="x@x.com\r\nbcc: evil@evil.com")
+        self.assertIn("injection", err.lower())
+
+    def test_send_raw_email_rejects_crlf_in_bcc(self):
+        _, err = self.inbox._send_raw_email(
+            "a@x.com", "Subject", "body", bcc="x@x.com\r\nevil@evil.com")
+        self.assertIn("injection", err.lower())
+
+    def test_the_full_chain_does_not_deliver_to_the_attacker(self):
+        """End-to-end: a crafted incoming subject -> outbox -> retry must never
+        produce a recipient that was not in the original 'to' field."""
+        from email.header import Header
+        encoded_subj = Header(self.INJECTED_SUBJECT, "utf-8").encode()
+        raw = (f"From: sender@x.com\nSubject: {encoded_subj}\n"
+               f"Date: Tue, 1 Sep 2026 10:00:00 -0700\n"
+               f"Message-ID: <inj@x>\nContent-Type: text/plain\n\nbody").encode()
+        fake = FakeIMAP({"101": raw})
+        with mock.patch.object(agent_inbox.imaplib, "IMAP4_SSL", return_value=fake):
+            self.inbox.fetch_unread_and_store()
+
+        entry = self.index()[0]
+        subject = entry["subject"]
+        self.assertNotIn("\n", subject)
+
+        with mock.patch.object(AgentInbox, "_send_raw_email",
+                               return_value=(False, "test failure")):
+            self.inbox.send_email("legit@x.com", f"Re: {subject}", "reply",
+                                  in_reply_to="<inj@x>")
+
+        outbox = self.inbox.list_outbox()
+        self.assertEqual(len(outbox), 1)
+        self.assertEqual(outbox[0]["to"], "legit@x.com")
+        # The attacker address must not appear as a recipient anywhere.
+        # It may appear harmlessly inside the subject string (where the
+        # newline was collapsed to a space), but never as a bcc or to.
+        self.assertNotIn("attacker", outbox[0].get("bcc") or "")
+        self.assertFalse(
+            "attacker" in outbox[0].get("to", ""),
+            "attacker address landed in the 'to' field")
