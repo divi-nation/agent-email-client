@@ -210,6 +210,32 @@ class TestOperatorAlerts(InboxTestCase):
         self.assertFalse(inbox.send_operator_alert("Subject", "Body"))
 
 
+class TestTheDigestCarriesExtensionNotes(InboxTestCase):
+    """`notes` is a generic slot: the library renders whatever strings it is
+    given and does not know which extension, if any, wrote them."""
+
+    def _body(self, **kw):
+        with mock.patch.object(AgentInbox, "_send_raw_email",
+                               return_value=(True, None)) as send:
+            self.inbox.send_session_digest("Continuing", 1, 0.0, 10.0, **kw)
+        return send.call_args[0][2]
+
+    def test_a_note_lands_before_the_errors_block(self):
+        line = "Memory: 3 entries — 1 carried whole, 1 shortened by " \
+              "truncating, 1 by rewriting; 0 broken. Offered 1 this " \
+              "session, opened 2."
+        body = self._body(notes=[line])
+        self.assertIn(f"\n🧩 From extensions:\n- {line}\n", body)
+        self.assertLess(body.index("From extensions"),
+                        body.index("No errors reported"))
+
+    def test_no_notes_leaves_the_body_unchanged(self):
+        without = self._body()
+        self.assertNotIn("From extensions", without)
+        self.assertEqual(without, self._body(notes=None))
+        self.assertEqual(without, self._body(notes=[]))
+
+
 class TestIdGeneration(InboxTestCase):
 
     def test_a_broken_index_entry_does_not_stop_new_mail(self):

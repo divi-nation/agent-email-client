@@ -58,6 +58,15 @@ RESERVED_EMAIL_DOMAINS = {
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 
 
+def _normalize_message_id(mid):
+    """Canonical form of a Message-ID for comparison.
+
+    The prompt shows Message-IDs with angle brackets (<...>) because that is
+    how they arrive in the header.  The agent sometimes passes them back
+    without.  Stripping both sides before comparing prevents a silent miss."""
+    return (mid or "").strip().strip("<>")
+
+
 # =====================================================================
 # AGENT-FACING INSTRUCTIONS
 # =====================================================================
@@ -355,6 +364,43 @@ class AgentInbox:
         with open(self._index_path(), "w", encoding="utf-8") as f:
             json.dump(index, f, indent=2)
 
+    @staticmethod
+    def _bare_address(addr):
+        """Extract the bare email from 'Name <email>' or plain 'email'."""
+        if not addr:
+            return ""
+        addr = str(addr).strip()
+        if "<" in addr and ">" in addr:
+            addr = addr.split("<", 1)[1].split(">", 1)[0]
+        return addr.strip().lower()
+
+    def count_sent_today(self, to_address):
+        """How many emails have been sent to *to_address* today (agent's TZ).
+
+        Counts index entries where direction=outgoing, status=sent, and the
+        date falls on today's calendar date in the agent's timezone.  The
+        comparison is on bare email addresses, case-insensitive."""
+        target = self._bare_address(to_address)
+        if not target:
+            return 0
+        today = datetime.now(self.timezone).date()
+        count = 0
+        for entry in self.load_index():
+            if entry.get("direction") != "outgoing":
+                continue
+            if entry.get("status") != "sent":
+                continue
+            if self._bare_address(entry.get("to")) != target:
+                continue
+            date_str = entry.get("date", "")
+            try:
+                entry_date = datetime.fromisoformat(date_str).date()
+            except (ValueError, TypeError):
+                continue
+            if entry_date == today:
+                count += 1
+        return count
+
     def _generate_email_id(self, existing_ids):
         """Generate a unique message ID for new emails."""
         nums = []
@@ -376,8 +422,10 @@ class AgentInbox:
         letter being answered. Empty when this is not a reply."""
         if not in_reply_to:
             return None
+        needle = _normalize_message_id(in_reply_to)
         parent = next((e for e in self.load_index()
-                       if e.get("message_id") == in_reply_to), None)
+                       if _normalize_message_id(e.get("message_id")) == needle),
+                      None)
         earlier = _reference_ids(parent.get("references")) if parent else []
         return " ".join(earlier + [in_reply_to])
 
@@ -926,6 +974,10 @@ class AgentInbox:
                 continue
         return out
 
+    def count_drafts(self):
+        """Number of unsent drafts in the index."""
+        return len(self.list_drafts())
+
     def count_outbox(self):
         """Number of emails currently queued in the outbox (folder file count)."""
         outbox_path = self.private_repo_path / "record" / "emails" / "outbox"
@@ -1262,10 +1314,11 @@ class AgentInbox:
         bookkeeping afterwards would be the wrong trade."""
         if not in_reply_to:
             return ""
+        needle = _normalize_message_id(in_reply_to)
         try:
             index = self.load_index()
             for entry in index:
-                if (entry.get("message_id") != in_reply_to
+                if (_normalize_message_id(entry.get("message_id")) != needle
                         or entry.get("direction") != "incoming"):
                     continue
                 notes = []
@@ -1438,13 +1491,17 @@ class AgentInbox:
                             files_edited=0, journal_written=False, journal_entry="",
                             account_balance=None, monthly_limit=None,
                             scripts_run=None, tasks_completed=0, tasks_added=0,
-                            journal_forced=False):
+                            journal_forced=False, notes=None):
         """
         Send a session digest email to the operator.
 
         IMPORTANT: digests are ENGINE telemetry, not the agent's correspondence.
         They are sent directly via SMTP and are NOT archived in record/emails/ and
         NOT added to index.json (so they never pollute the agent's email record).
+
+        `notes` is a plain list of strings, rendered as one line each under a
+        "From extensions" heading if the list is non-empty. This library does
+        not know or care what wrote them.
         """
         if not self.operator_email:
             print("⚠️ No operator email set. Skipping digest.")
@@ -1510,6 +1567,11 @@ Date/Time: {now_local.strftime('%Y-%m-%d %H:%M %Z')}
                 body += f"  - To: {email.get('to', 'Unknown')} | Subject: {email.get('subject', 'No subject')} | Date: {email.get('date', 'Unknown')}\n"
             if len(sent_emails) > 10:
                 body += f"  ... and {len(sent_emails) - 10} more.\n"
+
+        if notes:
+            body += "\n🧩 From extensions:\n"
+            for line in notes:
+                body += f"- {line}\n"
 
         if errors:
             body += f"""
