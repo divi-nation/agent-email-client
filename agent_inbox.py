@@ -805,6 +805,16 @@ class AgentInbox:
         if message_id in by_local and message_id not in by_msgid:
             message_id = by_local[message_id].get("message_id") or message_id
 
+        # A Message-ID is stored with its angle brackets. A caller may give
+        # it either way — the same id was passed with them one session and
+        # without the next — so both forms are tried before giving up.
+        if message_id not in by_msgid:
+            bare = (message_id or "").strip()
+            for form in (bare, f"<{bare.strip('<>')}>", bare.strip("<>")):
+                if form in by_msgid:
+                    message_id = form
+                    break
+
         if message_id not in by_msgid:
             return []
 
