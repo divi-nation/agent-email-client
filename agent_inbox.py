@@ -1501,7 +1501,7 @@ class AgentInbox:
                             files_edited=0, journal_written=False, journal_entry="",
                             account_balance=None, monthly_limit=None,
                             scripts_run=None, tasks_completed=0, tasks_added=0,
-                            journal_forced=False, notes=None):
+                            journal_forced=False, notes=None, studio_url=None):
         """
         Send a session digest email to the operator.
 
@@ -1512,6 +1512,9 @@ class AgentInbox:
         `notes` is a plain list of strings, rendered as one line each under a
         "From extensions" heading if the list is non-empty. This library does
         not know or care what wrote them.
+
+        `studio_url`, if given, is the address where the operator manages the
+        agent, and opens the footer as "Manage your agent: <address>".
         """
         if not self.operator_email:
             print("⚠️ No operator email set. Skipping digest.")
@@ -1591,9 +1594,10 @@ Date/Time: {now_local.strftime('%Y-%m-%d %H:%M %Z')}
         else:
             body += "\n✅ No errors reported this session.\n"
 
+        manage_line = f"Manage your agent: {studio_url}\n" if studio_url else ""
         body += f"""
 ---
-Sent by {self.agent_name}, autonomous AI agent.
+{manage_line}Sent by {self.agent_name}, autonomous AI agent.
 (Engine-generated session digest — sent outside the agent's correspondence archive.)
 """
 
